@@ -17,6 +17,7 @@ interface InterviewState {
   currentQuestion: string;
   transcript: string;
   evaluation: EvaluationData | null;
+  awaitingName: boolean;
 }
 
 interface SummaryData {
@@ -31,6 +32,7 @@ function App() {
     currentQuestion: "",
     transcript: "",
     evaluation: null,
+    awaitingName: false,
   });
   const [isRecording, setIsRecording] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -59,6 +61,7 @@ function App() {
         currentQuestion: response.data.question,
         transcript: "",
         evaluation: null,
+        awaitingName: true,
       });
 
       setCurrentAudio(response.data.audio_file);
@@ -153,11 +156,23 @@ function App() {
         },
       );
 
-      setState((prev) => ({
-        ...prev,
-        transcript: response.data.transcript,
-        evaluation: response.data.evaluation,
-      }));
+      // Check if this was the name collection response
+      if (response.data.name_collected) {
+        setState((prev) => ({
+          ...prev,
+          currentQuestion: response.data.next_question,
+          transcript: "",
+          evaluation: null,
+          awaitingName: false,
+        }));
+        setCurrentAudio(response.data.audio_file);
+      } else {
+        setState((prev) => ({
+          ...prev,
+          transcript: response.data.transcript,
+          evaluation: response.data.evaluation,
+        }));
+      }
     } catch (err: any) {
       const errorMessage =
         err.response?.data?.detail ||
@@ -276,6 +291,7 @@ function App() {
                   currentQuestion: "",
                   transcript: "",
                   evaluation: null,
+                  awaitingName: false,
                 });
               }}
               data-testid="start-new-interview-btn"

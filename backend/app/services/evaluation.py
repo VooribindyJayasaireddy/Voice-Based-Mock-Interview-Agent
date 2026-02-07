@@ -2,7 +2,9 @@ from app.services.llm import call_llm
 import json
 import re
 
-async def evaluate_answer(question, answer):
+async def evaluate_answer(question, answer, candidate_name: str = None):
+    personalization = f"Address the candidate as {candidate_name} in your feedback." if candidate_name else ""
+    
     prompt = f"""
 Question: {question}
 Answer: {answer}
@@ -11,6 +13,8 @@ Evaluate from 0-10 on:
 - Relevance
 - Clarity
 - Correctness
+
+{personalization}
 
 Return ONLY valid JSON, no markdown or extra text:
 {{"relevance": int, "clarity": int, "correctness": int, "feedback": "text"}}

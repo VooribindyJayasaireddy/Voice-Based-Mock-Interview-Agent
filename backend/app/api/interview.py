@@ -16,11 +16,15 @@ SESSIONS = {}
 # -------------------------------
 # Question Generator (LLM)
 # -------------------------------
-async def generate_questions(role: str, count: int = 3):
+async def generate_questions(role: str, count: int = 3, candidate_name: str = None):
+    # Add personalization if name is provided
+    personalization = f"Address the candidate as {candidate_name} in the questions naturally." if candidate_name else ""
+    
     prompt = f"""
 You are an interview agent.
 
 Generate {count} interview questions for the role: {role}.
+{personalization}
 
 Rules:
 - Questions must be suitable for a spoken interview
@@ -28,6 +32,7 @@ Rules:
 - Increasing difficulty
 - No numbering
 - No explanations
+{"- Naturally incorporate the candidate's name in questions when appropriate" if candidate_name else ""}
 
 Return ONLY a JSON array of strings, no markdown or extra text.
 Example:
@@ -53,9 +58,10 @@ Example:
         # Fallback to default questions if JSON parsing fails
         print(f"JSON parsing error in question generation: {e}")
         print(f"LLM response: {response}")
+        name_prefix = f"{candidate_name}, " if candidate_name else ""
         return [
-            f"Tell me about your experience with {role} responsibilities.",
-            f"What technical skills do you bring to the {role} position?",
+            f"{name_prefix}Tell me about your experience with {role} responsibilities.",
+            f"{name_prefix}What technical skills do you bring to the {role} position?",
             f"Describe a challenging project you've worked on."
         ]
 
@@ -66,22 +72,23 @@ Example:
 async def start_interview(role: str):
     interview_id = str(uuid4())
 
-    # Generate questions using ChatGPT
-    questions = await generate_questions(role)
-
-    # Initialize session
+    # Initialize session with name collection phase
     SESSIONS[interview_id] = {
+        "role": role,
         "index": 0,
-        "questions": questions,
-        "answers": []
+        "questions": [],
+        "answers": [],
+        "awaiting_name": True,
+        "candidate_name": None
     }
 
-    question = questions[0]
-    audio = await text_to_speech(question)
+    # Ask for name first
+    name_question = "Hello! Before we begin the interview, could you please tell me your name?"
+    audio = await text_to_speech(name_question)
 
     return {
         "interview_id": interview_id,
-        "question": question,
+        "question": name_question,
         "audio_file": audio
     }
 
@@ -96,23 +103,51 @@ async def submit_answer(interview_id: str, audio: UploadFile):
     audio_bytes = await audio.read()
     transcript = await speech_to_text(audio_bytes)
 
-    idx = SESSIONS[interview_id]["index"]
-    questions = SESSIONS[interview_id]["questions"]
+    session = SESSIONS[interview_id]
+    
+    # Check if we're waiting for the candidate's name
+    if session["awaiting_name"]:
+        # Extract name from transcript
+        candidate_name = transcript.strip()
+        session["candidate_name"] = candidate_name
+        session["awaiting_name"] = False
+        
+        # Generate personalized questions
+        role = session["role"]
+        questions = await generate_questions(role, count=3, candidate_name=candidate_name)
+        session["questions"] = questions
+        
+        # Return first question with greeting
+        first_question = f"Thank you, {candidate_name}! {questions[0]}"
+        audio_file = await text_to_speech(first_question)
+        
+        return {
+            "transcript": transcript,
+            "evaluation": None,
+            "next_question": first_question,
+            "audio_file": audio_file,
+            "name_collected": True
+        }
+    
+    # Normal answer evaluation flow
+    idx = session["index"]
+    questions = session["questions"]
 
     if idx >= len(questions):
         raise HTTPException(status_code=400, detail="Interview already completed")
 
     question = questions[idx]
+    candidate_name = session.get("candidate_name")
 
-    evaluation = await evaluate_answer(question, transcript)
+    evaluation = await evaluate_answer(question, transcript, candidate_name)
 
-    SESSIONS[interview_id]["answers"].append({
+    session["answers"].append({
         "question": question,
         "transcript": transcript,
         "evaluation": evaluation
     })
 
-    SESSIONS[interview_id]["index"] += 1
+    session["index"] += 1
 
     return {
         "transcript": transcript,
@@ -159,7 +194,8 @@ async def summary(interview_id: str):
         }
     
     # Build comprehensive interview context for LLM
-    interview_context = "Interview Performance Analysis:\n\n"
+    candidate_name = SESSIONS[interview_id].get("candidate_name", "the candidate")
+    interview_context = f"Candidate Name: {candidate_name}\n\nInterview Performance Analysis:\n\n"
     for i, qa in enumerate(answers, 1):
         interview_context += f"Question {i}: {qa['question']}\n"
         interview_context += f"Answer: {qa['transcript']}\n"
@@ -174,9 +210,11 @@ async def summary(interview_id: str):
 
 Based on this complete interview performance, provide a comprehensive summary with:
 
-1. Overall Feedback: A 2-3 sentence summary of the candidate's overall performance
+1. Overall Feedback: A 2-3 sentence summary of {candidate_name}'s overall performance
 2. Strengths: Key strengths demonstrated across all answers (2-3 specific points)
 3. Areas for Improvement: Specific actionable suggestions for improvement (2-3 points)
+
+Address {candidate_name} directly in the feedback.
 
 Return ONLY valid JSON, no markdown or extra text:
 {{"overall_feedback": "text", "strengths": "text", "improvements": "text"}}
